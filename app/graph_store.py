@@ -20,6 +20,8 @@ RETURN a.id AS action_id, a.name AS action, a.steps AS steps,
        r.success_rate AS success_rate, c.id AS cause_id, c.name AS cause, cause_score
 ORDER BY cause_score * success_rate DESC, action_id
 LIMIT $limit
+"""
+
 # How much the starting success rate counts, measured in "jobs".
 # 10 means the seed rate is treated like 10 past jobs, so one bad report
 # moves it a little, not all the way to 0.
@@ -37,14 +39,13 @@ RETURN r.success_rate AS success_rate, r.attempts AS attempts, r.successes AS su
 
 def updated_rate(prior_rate: float, successes: int, attempts: int) -> float:
     return (prior_rate * PRIOR_WEIGHT + successes) / (PRIOR_WEIGHT + attempts)
-"""
 
 
 class GraphStore(Protocol):
     def find_candidate_actions(self, device_type: str, symptom_ids: list[str], limit: int = 5) -> list[dict]: ...
 
     def list_symptoms(self) -> list[dict]: ...
-    
+
     def record_outcome(self, cause_id: str, action_id: str, success: bool) -> dict | None: ...
 
 
@@ -55,7 +56,7 @@ class InMemoryGraphStore:
         self._symptoms = {s["id"]: s for s in sd.SYMPTOMS}
         self._causes = {c["id"]: c for c in sd.CAUSES}
         self._actions = {a["id"]: a for a in sd.ACTIONS}
-                # Copy the fix edges so feedback can change them without touching sample_data.
+        # Copy the fix edges so feedback can change them without touching sample_data.
         self._edges = {
             (cause_id, action_id): {"prior_rate": rate, "success_rate": rate, "attempts": 0, "successes": 0}
             for cause_id, action_id, rate in sd.RESOLVED_BY
@@ -63,6 +64,7 @@ class InMemoryGraphStore:
 
     def list_symptoms(self) -> list[dict]:
         return list(self._symptoms.values())
+
     def record_outcome(self, cause_id: str, action_id: str, success: bool) -> dict | None:
         edge = self._edges.get((cause_id, action_id))
         if edge is None:
@@ -79,7 +81,7 @@ class InMemoryGraphStore:
                 cause_scores[cause_id] += weight
 
         rows = []
-            for (cause_id, action_id), edge in self._edges.items():
+        for (cause_id, action_id), edge in self._edges.items():
             if cause_id not in cause_scores:
                 continue
             success_rate = edge["success_rate"]
@@ -119,7 +121,7 @@ class Neo4jGraphStore:
             CANDIDATES_CYPHER, device_type=device_type, symptom_ids=symptom_ids, limit=limit
         )
         return [r.data() for r in records]
-    
+
     def record_outcome(self, cause_id: str, action_id: str, success: bool) -> dict | None:
         records, _, _ = self._driver.execute_query(
             RECORD_OUTCOME_CYPHER, cause_id=cause_id, action_id=action_id,
