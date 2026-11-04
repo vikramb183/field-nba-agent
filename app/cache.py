@@ -11,6 +11,8 @@ class Cache(Protocol):
 
     def set(self, key: str, value: dict | list, ttl_seconds: int) -> None: ...
 
+    def clear(self) -> None: ...
+
 
 class InMemoryCache:
     def __init__(self) -> None:
@@ -28,6 +30,9 @@ class InMemoryCache:
 
     def set(self, key: str, value, ttl_seconds: int) -> None:
         self._data[key] = (time.monotonic() + ttl_seconds, json.dumps(value))
+    
+    def clear(self) -> None:
+        self._data.clear()
 
 
 class RedisCache:
@@ -42,3 +47,8 @@ class RedisCache:
 
     def set(self, key: str, value, ttl_seconds: int) -> None:
         self._client.set(key, json.dumps(value), ex=ttl_seconds)
+        
+    def clear(self) -> None:
+        # Only delete this app's keys, not everything in Redis.
+        for key in self._client.scan_iter("nba:*"):
+            self._client.delete(key)

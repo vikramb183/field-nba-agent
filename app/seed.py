@@ -43,7 +43,7 @@ def seed(driver) -> None:
     )
     driver.execute_query(
         "UNWIND $rows AS r MATCH (c:Cause {id: r.cause}), (a:Action {id: r.action}) "
-        "MERGE (c)-[x:RESOLVED_BY]->(a) SET x.success_rate = r.rate",
+        "MERGE (c)-[x:RESOLVED_BY]->(a) ON CREATE SET x.success_rate = r.rate",
         rows=[{"cause": c, "action": a, "rate": x} for c, a, x in sd.RESOLVED_BY],
     )
 

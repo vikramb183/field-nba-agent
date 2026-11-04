@@ -51,3 +51,16 @@ def test_cypher_matches_in_memory(neo4j_store, device, symptoms):
 
 def test_symptom_catalog_loaded(neo4j_store):
     assert {s["id"] for s in neo4j_store.list_symptoms()} >= {"no_internet", "los_light"}
+
+
+
+def test_feedback_updates_the_edge_in_neo4j(neo4j_store):
+    from app.graph_store import InMemoryGraphStore
+
+    memory = InMemoryGraphStore()
+    for success in (True, False, False):
+        expected = memory.record_outcome("fiber_damage", "clean_inspect_fiber", success)
+        actual = neo4j_store.record_outcome("fiber_damage", "clean_inspect_fiber", success)
+        assert actual["success_rate"] == pytest.approx(expected["success_rate"])
+        assert actual["attempts"] == expected["attempts"]
+    assert neo4j_store.record_outcome("fiber_damage", "nope", True) is None

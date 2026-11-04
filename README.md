@@ -1,6 +1,6 @@
 # Field Next-Best-Action Agent
 
-A multi-agent service that tells a field technician what to do next. The tech sends a device type and a free-text note ("no internet, red LOS light on the ONT"). The service works out the symptoms, looks up likely causes and proven fixes in a **Neo4j knowledge graph**, ranks the fixes, and passes the answer through a guardrail before returning it.
+A multi-agent service that tells a field technician what to do next. The tech sends a device type and a free-text note ("no internet, red LOS light on the ONT"). The service works out the symptoms, looks up likely causes and proven fixes in a **Neo4j knowledge graph**, ranks the fixes, and passes the answer through a guardrail before returning it. After the job, the tech reports whether the fix worked, and the graph **learns from that outcome**.
 
 Built with **LangGraph**, **Neo4j**, **Redis**, **FastAPI**, and an optional **OpenAI** model. It runs fully offline with no API key.
 
@@ -17,6 +17,7 @@ flowchart LR
     R --> P[Planner agent<br/>rank fixes + explain]
     P --> V[Reviewer agent<br/>guardrails]
     V --> OUT[Response + trace]
+    F[POST /feedback] -.->|update success rate<br/>+ clear cache| R
 ```
 
 | Agent | What it does |
@@ -28,11 +29,19 @@ flowchart LR
 
 Every node writes its name and run time to a `trace` list, so each response shows the path it took and where the time went.
 
+### Learning from outcomes
+
+After a job, the technician calls `POST /feedback` with the cause, the action, and whether it worked. The success rate on that `RESOLVED_BY` edge becomes `(starting rate × 10 + successes) ÷ (10 + attempts)`. The starting rate counts as 10 past jobs, so one bad report nudges it instead of wiping it out. The cache is cleared so the next answer uses the new rate.
+
+Example: "Move to a cleaner Wi-Fi channel" starts at 70%. One failed report drops it to 64%, and the next router ticket recommends "Add a mesh extender" first.
+
 ### Graph model
+
+![Knowledge graph in Neo4j](docs/graph.png)
 
 ```
 (:Symptom)-[:INDICATES {weight}]->(:Cause)-[:AFFECTS]->(:DeviceType)
-(:Cause)-[:RESOLVED_BY {success_rate}]->(:Action)
+(:Cause)-[:RESOLVED_BY {success_rate, attempts, successes}]->(:Action)
 ```
 
 The retrieval query (`app/graph_store.py`):
@@ -102,18 +111,33 @@ curl -X POST localhost:8000/next-best-action \
 
 (Trimmed. The real response includes every field.)
 
+Report that the fix didn't work:
+
+```bash
+curl -X POST localhost:8000/feedback \
+  -H "content-type: application/json" \
+  -d '{"cause_id": "wifi_interference", "action_id": "change_wifi_channel", "success": false}'
+```
+
+```json
+{"cause_id": "wifi_interference", "action_id": "change_wifi_channel", "success_rate": 0.636, "attempts": 1, "successes": 0}
+```
+
+Send the same ticket again and the top pick becomes "Add a mesh extender".
+
 ## Endpoints
 
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/next-best-action` | Main endpoint. `device_type` is one of `ont`, `router`, `small_cell`. |
+| POST | `/feedback` | Report whether a fix worked. Updates that fix's success rate in the graph and clears the cache. |
 | GET | `/health` | Shows which store, cache, and LLM mode are active. |
 | GET | `/workflow` | The LangGraph workflow as a Mermaid diagram. |
 
 ## Tests and CI
 
-- **Unit tests** cover triage, graph retrieval, every routing branch, the cache, the LLM path (with a fake model), LLM failure fallback, and API validation.
-- **Integration tests** seed a real Neo4j instance and check that the Cypher query returns the same ranking as the in-memory store. A second test checks Redis TTL. They skip locally unless `NEO4J_URI` / `REDIS_TEST_URL` are set.
+- **Unit tests** cover triage, graph retrieval, every routing branch, the cache, the LLM path (with a fake model), LLM failure fallback, API validation, and the feedback loop (rate math, cache clearing, and the recommendation changing after a failed fix).
+- **Integration tests** seed a real Neo4j instance and check that the Cypher queries return the same rankings and feedback updates as the in-memory store. A second test checks Redis TTL. They skip locally unless `NEO4J_URI` / `REDIS_TEST_URL` are set.
 - **GitHub Actions** (`.github/workflows/ci.yml`) starts Neo4j and Redis as service containers, runs the full suite, and builds the Docker image. A `Jenkinsfile` with the same stages is included.
 
 ## Project layout
@@ -122,7 +146,7 @@ curl -X POST localhost:8000/next-best-action \
 app/
   agents.py        the four agents + routing functions
   workflow.py      LangGraph StateGraph wiring
-  graph_store.py   Neo4j store + in-memory twin (same interface)
+  graph_store.py   Neo4j store + in-memory twin (same interface), feedback updates
   cache.py         Redis cache + in-memory TTL cache
   llm.py           LLM prompts and offline fallbacks
   api.py           FastAPI app
@@ -137,9 +161,10 @@ tests/
 - **Graph instead of vector search.** Symptom → cause → fix is a chain of relationships with weights. A graph query returns the reasoning path, not just similar text, so every recommendation can be traced back to the edges that produced it.
 - **The LLM is optional.** It improves triage on messy notes and writes nicer explanations, but the ranking comes from data, not from the model. With no key, everything still works.
 - **Same interface, two backends.** `InMemoryGraphStore` and `Neo4jGraphStore` share one interface, so tests run in under a second and CI proves the two give the same results.
+- **Smoothed learning.** Feedback uses the starting rate as a prior worth 10 jobs, so early reports can't swing a fix to 0% or 100%. The seed script uses `ON CREATE SET`, so restarting the app doesn't wipe learned rates.
 
 ## Next steps
 
-- Feed real outcomes back into `success_rate` (did the fix work?)
 - Add LangGraph checkpointing so a tech can answer the clarification question and resume the same run
 - Add Prometheus metrics for per-node latency and escalation rate
+- Add a Docker volume so learned rates in Neo4j survive `docker compose down`
