@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from app.cache import InMemoryCache, RedisCache
@@ -21,6 +21,18 @@ class NBARequest(BaseModel):
     device_type: Literal["ont", "router", "small_cell"]
     description: str = Field(min_length=3, max_length=1000,
                              examples=["Customer has no internet and the ONT shows a red LOS light"])
+class FeedbackRequest(BaseModel):
+    cause_id: str = Field(examples=["wifi_interference"])
+    action_id: str = Field(examples=["change_wifi_channel"])
+    success: bool
+
+
+class FeedbackResponse(BaseModel):
+    cause_id: str
+    action_id: str
+    success_rate: float
+    attempts: int
+    successes: int
 
 
 class NBAResponse(BaseModel):
@@ -67,6 +79,15 @@ def create_app(store=None, cache=None, llm=None) -> FastAPI:
         log.info("nba device=%s status=%s trace=%s", req.device_type, result.get("status"),
                  [(t["node"], t["ms"]) for t in result.get("trace", [])])
         return NBAResponse(**{k: v for k, v in result.items() if k in NBAResponse.model_fields})
+    @app.post("/feedback", response_model=FeedbackResponse)
+    def feedback(req: FeedbackRequest):
+        updated = store.record_outcome(req.cause_id, req.action_id, req.success)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="No such cause/action pair in the graph")
+        cache.clear()  # cached answers used the old rate
+        log.info("feedback cause=%s action=%s success=%s new_rate=%.3f",
+                 req.cause_id, req.action_id, req.success, updated["success_rate"])
+        return FeedbackResponse(cause_id=req.cause_id, action_id=req.action_id, **updated)
 
     return app
 
