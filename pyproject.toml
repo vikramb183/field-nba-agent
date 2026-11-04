@@ -1,0 +1,9 @@
+[project]
+name = "field-nba-agent"
+version = "0.1.0"
+description = "Multi-agent next-best-action recommender for field technicians (LangGraph + Neo4j)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
